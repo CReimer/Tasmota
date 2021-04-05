@@ -2462,7 +2462,10 @@ void HandleUploadLoop(void) {
 #endif  // USE_TASMOTA_CLIENT
 #ifdef SHELLY_FW_UPGRADE
       else if (ShdPresent() && (0x00 == upload.buf[0]) && (0x10 == upload.buf[1])) {
-        BUploadInit(UPL_SHD);
+        BUploadInit(UPL_SHD); // jamesturton STM32 firmware
+      }
+      else if (ShdPresent() && (0x00 == upload.buf[0]) && (0x20 == upload.buf[1])) {
+        BUploadInit(UPL_SHD); // Official Shelly STM32 firmware
       }
 #endif  // SHELLY_FW_UPGRADE
 #ifdef USE_CCLOADER

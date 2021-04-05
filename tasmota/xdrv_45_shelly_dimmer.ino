@@ -32,7 +32,7 @@
 #define XDRV_45                     45
 #define XNRG_31                     31
 
-// #define SHELLY_DIMMER_DEBUG
+#define SHELLY_DIMMER_DEBUG
 // #define SHELLY_HW_DIMMING
 
 #define SHD_LOGNAME                 "SHD: "
@@ -42,12 +42,16 @@
 #define D_CMND_LEADINGEDGE          "LeadingEdge"
 #define D_CMND_WARMUPBRIGHTNESS     "WarmupBrightness"
 #define D_CMND_WARMUPTIME           "WarmupTime"
+#define MAX_BRIGHTNESS              700
+#define BRIGHTNESS_MULTI            1
 #endif // SHELLY_CMDS
 
-#define SHD_SWITCH_CMD              0x01
-#define SHD_SWITCH_FADE_CMD         0x02
+#define SHD_VERSION_OR_SWITCH_CMD   0x01 // Is version command in official firmware but switch command in jamesturton's
+#define SHD_SWITCH_CMD              0x02
+#define SHD_JT_SWITCH_FADE_CMD      0x02
+#define SHD_SWITCH_FADE_CMD         0x03
 #define SHD_POLL_CMD                0x10
-#define SHD_VERSION_CMD             0x11
+#define SHD_JT_VERSION_CMD          0x11
 #define SHD_SETTINGS_CMD            0x20
 #define SHD_WARMUP_CMD              0x21
 #define SHD_CALIBRATION1_CMD        0x30
@@ -55,7 +59,7 @@
 
 #define SHD_SWITCH_SIZE             2
 #define SHD_SWITCH_FADE_SIZE        6
-#define SHD_SETTINGS_SIZE           10
+#define SHD_SETTINGS_SIZE           12
 #define SHD_WARMUP_SIZE             4
 #define SHD_CALIBRATION_SIZE        200
 
@@ -77,6 +81,7 @@ typedef struct
 {
     uint8_t version_major = 0;
     uint8_t version_minor = 0;
+    bool original_firmware = false;
 
     uint32_t brightness = 0;
     uint32_t power = 0;
@@ -92,7 +97,8 @@ struct SHD
     SHD_DIMMER dimmer;
     uint32_t start_time = 0;
     uint8_t counter = 1;                // Packet counter
-    uint16_t req_fade_rate = 0;
+    uint16_t req_fade_rate = 5;
+    uint16_t anti_flicker = 100;
     uint16_t leading_edge = 2;          // Leading edge = 2 Trailing edge = 1
     uint16_t warmup_brightness = 100;   // 10%
     uint16_t warmup_time = 20;          // 20ms
@@ -325,21 +331,23 @@ void ShdSetBrightness()
     // Payload format:
     // [0-1] Brightness (%) * 10
 
+    uint16_t brightness = Shd.req_brightness * BRIGHTNESS_MULTI;
     uint8_t payload[SHD_SWITCH_SIZE];
 
-    payload[0] = Shd.req_brightness & 0xff;
-    payload[1] = Shd.req_brightness >> 8;
+    payload[0] = brightness & 0xff;
+    payload[1] = brightness >> 8;
 
     ShdSendCmd(SHD_SWITCH_CMD, payload, SHD_SWITCH_SIZE);
 }
 
 void ShdSetBrightnessFade()
 {
+    uint16_t brightness = Shd.req_brightness * BRIGHTNESS_MULTI;
     uint16_t delta = 0;
-    if (Shd.req_brightness > Shd.dimmer.brightness)
-        delta = (Shd.req_brightness - Shd.dimmer.brightness) * 0.8;
+    if (brightness > Shd.dimmer.brightness)
+        delta = (brightness - Shd.dimmer.brightness) * 0.8;
     else
-        delta = (Shd.dimmer.brightness - Shd.req_brightness) * 0.8;
+        delta = (Shd.dimmer.brightness - brightness) * 0.8;
 
     // Payload format:
     // [0-1] Brightness (%) * 10
@@ -357,27 +365,36 @@ void ShdSetBrightnessFade()
     payload[4] = 0;
     payload[5] = 0;
 
-    ShdSendCmd(SHD_SWITCH_FADE_CMD, payload, SHD_SWITCH_FADE_SIZE);
+    if (Shd.dimmer.original_firmware) {
+        ShdSendCmd(SHD_SWITCH_FADE_CMD, payload, SHD_SWITCH_FADE_SIZE);
+    } else {
+        ShdSendCmd(SHD_JT_SWITCH_FADE_CMD, payload, SHD_SWITCH_FADE_SIZE);
+    }
 }
 
 void ShdSendSettings()
 {
-    // as specified in STM32 assembly
+    // As it can be set in Shelly's webinterface
     uint16_t fade_rate = Shd.req_fade_rate;
-    if (fade_rate > 100)
-        fade_rate = 100;
+    if (fade_rate > 25)
+        fade_rate = 25;
+    if (fade_rate < 5)
+        fade_rate = 5;
+
+    uint16_t brightness = Shd.req_brightness * BRIGHTNESS_MULTI;
 
     // Payload format:
     // [0-1] Brightness (%) * 10
-    // [2-3] Leading / trailing edge (1=leading, 2=trailing) ToDo(jamesturton): Are there any other values this can take?
-    // [4-5] Fade rate (units unknown) ToDo(jamesturton): Find fade rate units
+    // [2-3] Leading / trailing edge (1=leading, 2=trailing)
+    // [4-5] Fade rate (5-25 in steps of 5 e.g. 1x-5x)
+    // [6-7] Anti-flicker debounce (50-150)
     // [6-7] Warm up brightness (%) * 10
-    // [8-9] Warm up duration (ms)
+    // [8-9] Warm up time (ms)
 
     uint8_t payload[SHD_SETTINGS_SIZE];
 
-    payload[0] = Shd.req_brightness & 0xff;
-    payload[1] = Shd.req_brightness >> 8;
+    payload[0] = brightness & 0xff;
+    payload[1] = brightness >> 8;
 
     payload[2] = Shd.leading_edge & 0xff;
     payload[3] = Shd.leading_edge >> 8;
@@ -385,11 +402,14 @@ void ShdSendSettings()
     payload[4] = fade_rate & 0xff;
     payload[5] = fade_rate >> 8;
 
-    payload[6] = Shd.warmup_brightness & 0xff;
-    payload[7] = Shd.warmup_brightness >> 8;
+    payload[6] = Shd.anti_flicker & 0xff;
+    payload[7] = Shd.anti_flicker >> 8;
 
-    payload[8] = Shd.warmup_time & 0xff;
-    payload[9] = Shd.warmup_time >> 8;
+    payload[8] = Shd.warmup_brightness & 0xff;
+    payload[9] = Shd.warmup_brightness >> 8;
+
+    payload[10] = Shd.warmup_time & 0xff;
+    payload[11] = Shd.warmup_time >> 8;
 
     ShdSendCmd(SHD_SETTINGS_CMD, payload, SHD_SETTINGS_SIZE);
 }
@@ -482,8 +502,7 @@ bool ShdPacketProcess(void)
     {
         case SHD_POLL_CMD:
             {
-                // 1 when returning fade_rate, 0 when returning wattage, brightness?
-                uint16_t unknown_0 = Shd.buffer[pos + 1] << 8 |
+                uint16_t hw_version = Shd.buffer[pos + 1] << 8 |
                         Shd.buffer[pos + 0];
 
                 uint16_t brightness = Shd.buffer[pos + 3] << 8 |
@@ -503,8 +522,6 @@ bool ShdPacketProcess(void)
                         Shd.buffer[pos + 14] << 16 |
                         Shd.buffer[pos + 13] << 8 |
                         Shd.buffer[pos + 12];
-
-                uint32_t fade_rate = Shd.buffer[pos + 16];
 
                 float wattage = 0;
                 if (wattage_raw > 0)
@@ -547,20 +564,31 @@ bool ShdPacketProcess(void)
 #endif  // USE_ENERGY_SENSOR
 
 #ifdef SHELLY_DIMMER_DEBUG
-                AddLog(LOG_LEVEL_DEBUG, PSTR(SHD_LOGNAME "ShdPacketProcess: Brightness:%d Power:%lu Voltage:%lu Current:%lu Fade:%d"), brightness, wattage_raw, voltage_raw, current_raw, fade_rate);
+                AddLog(LOG_LEVEL_DEBUG, PSTR(SHD_LOGNAME "ShdPacketProcess: Brightness:%d Power:%lu Voltage:%lu Current:%lu"), brightness, wattage_raw, voltage_raw, current_raw);
 #endif  // SHELLY_DIMMER_DEBUG
                 Shd.dimmer.brightness = brightness;
                 Shd.dimmer.power = wattage_raw;
-                Shd.dimmer.fade_rate = fade_rate;
             }
             break;
-        case SHD_VERSION_CMD:
+        case SHD_JT_VERSION_CMD:
             {
 #ifdef SHELLY_DIMMER_DEBUG
                 AddLog(LOG_LEVEL_DEBUG, PSTR(SHD_LOGNAME "ShdPacketProcess: Version: %u.%u"), Shd.buffer[pos + 1], Shd.buffer[pos]);
 #endif  // SHELLY_DIMMER_DEBUG
                 Shd.dimmer.version_minor = Shd.buffer[pos];
                 Shd.dimmer.version_major = Shd.buffer[pos + 1];
+            }
+            break;
+        case SHD_VERSION_OR_SWITCH_CMD:
+            if (Shd.dimmer.original_firmware) {
+                // Version command
+#ifdef SHELLY_DIMMER_DEBUG
+                AddLog(LOG_LEVEL_DEBUG, PSTR(SHD_LOGNAME "ShdPacketProcess: Version: %u.%u"), Shd.buffer[pos + 1], Shd.buffer[pos]);
+#endif  // SHELLY_DIMMER_DEBUG
+                Shd.dimmer.version_minor = Shd.buffer[pos];
+                Shd.dimmer.version_major = Shd.buffer[pos + 1];
+            } else {
+                ret = (Shd.buffer[pos] == 0x01);
             }
             break;
         case SHD_SWITCH_CMD:
@@ -618,7 +646,12 @@ bool ShdSendVersion(void)
 #ifdef SHELLY_DIMMER_DEBUG
     AddLog(LOG_LEVEL_INFO, PSTR(SHD_LOGNAME "Sending version command"));
 #endif  // SHELLY_DIMMER_DEBUG
-    return ShdSendCmd(SHD_VERSION_CMD, 0, 0);
+    bool got_result = ShdSendCmd(SHD_JT_VERSION_CMD, 0, 0);
+    if (Shd.dimmer.version_major == 0 && Shd.dimmer.version_minor == 0) {
+       Shd.dimmer.original_firmware = true;
+       return ShdSendCmd(SHD_VERSION_OR_SWITCH_CMD, 0, 0);
+    }
+    return got_result;
 }
 
 void ShdGetSettings(void)
